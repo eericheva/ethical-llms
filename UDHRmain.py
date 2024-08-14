@@ -14,7 +14,7 @@ from UDHR.get_UDHR_inputs import get_identities_dicts, get_rights_lists
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 path2result = "../ethical_llms_data/UDHR/"
-pre_name = "_2"
+post_name = "_6"
 
 
 def make_model():
@@ -101,8 +101,8 @@ def make_prompts():
     q_current, q_ideal = get_rights_lists()
     i_current = get_identities_dicts()
 
-    BTC_SIZE = 50
-    pre_prompt = "".join(open("UDHR/UDHR_Prompt.txt", "r").readlines())
+    BTC_SIZE = 50  # BATCHING: allow parallel compute for batch in A_original
+    pre_prompt = "".join(open(f"UDHR/UDHR_Prompt{post_name}.txt", "r").readlines())
     prompts, this_btc_prompts = [], []
     for q in q_current:
         for i_k in i_current.keys():
@@ -113,12 +113,14 @@ def make_prompts():
                 if len(this_btc_prompts) == BTC_SIZE:
                     prompts.append(this_btc_prompts)
                     this_btc_prompts = []
-    # for the last bacth with len()<BTC_SIZE
+    # for the last batch with len()<BTC_SIZE
     prompts.append(this_btc_prompts)
     return prompts
 
 
 def make_df(nom_df, mod_df, prompts, layer, i_class, i_name, r_name):
+    # MINOR OPTS: since A_attract and A_repel are computed once outside and are input args to get_n_comparisons()
+    # func, here we make some changes in constructing output DF
     nom_df = pd.DataFrame(
         {
             "prompts": prompts,
@@ -146,16 +148,20 @@ def make_df(nom_df, mod_df, prompts, layer, i_class, i_name, r_name):
 
 def do_sara(model, sampling_kwargs):
     # Steering prompts
+    # for setup_2 and setup_5
     # prompt_to_be_repelled = "Nobody should have rights and freedoms."
     # prompt_to_steer_to = "Everyone should have equal rights."
 
-    prompt_to_be_repelled = "Nobody should have rights and freedoms." * 10
-    prompt_to_steer_to = "Everyone should have equal rights." * 10
+    # for setup_3 * 10 and setup_6 * 2
+    prompt_to_be_repelled = "Nobody should have rights and freedoms." * 2
+    prompt_to_steer_to = "Everyone should have equal rights." * 2
 
     prompts_btc = make_prompts()
 
     # We'll store 5 repetitions per layer, for all layers
     for rep_n in range(1):
+        # MINOR OPTS: since A_attract and A_repel are computed once outside and are input args to get_n_comparisons()
+        # func, here we make some changes in constructing output DF
         df = pd.DataFrame(
             columns=[
                 "prompts",
@@ -173,6 +179,7 @@ def do_sara(model, sampling_kwargs):
             num_hidden_layers = int(model.metadata.get("gemma.block_count"))
         for layer in range(0, num_hidden_layers):
             print("Layer: " + str(layer) + " : rep_n: " + str(rep_n))
+            # MINOR OPTS: now A_attract and A_repel are computed once outside and are input args
             A_attract = u_sara.get_vectors(
                 model, model.tokenizer, [prompt_to_steer_to], layer
             )[0]
@@ -181,6 +188,7 @@ def do_sara(model, sampling_kwargs):
             )[0]
             # Fetch the comparison data
             for i, prompts in tqdm.tqdm(enumerate(prompts_btc), total=len(prompts_btc)):
+                # BATCHING: allow parallel compute for batch in A_original
                 i_classes, i_names, r_names, prompts = zip(*prompts)
                 comparison_df = u_sara.get_n_comparisons(
                     model=model,
@@ -192,6 +200,8 @@ def do_sara(model, sampling_kwargs):
                     coeff=1,
                     **sampling_kwargs,
                 )
+                # MINOR OPTS: since A_attract and A_repel are computed once outside and are input args to
+                # get_n_comparisons() func, here we make some changes in constructing output DF
                 comparison_df = make_df(
                     *comparison_df,
                     prompts=prompts,
@@ -212,7 +222,7 @@ def do_sara(model, sampling_kwargs):
                 open(
                     os.path.join(
                         path2result,
-                        f"responses{pre_name}/UDHR_sara_results_l_{layer}_rep_{rep_n}.csv",
+                        f"responses{post_name}/UDHR_sara_results_l_{layer}_rep_{rep_n}.csv",
                     ),
                     "w",
                 ),
@@ -223,7 +233,7 @@ def do_sara(model, sampling_kwargs):
             open(
                 os.path.join(
                     path2result,
-                    f"responses{pre_name}/UDHR_sara_results_{rep_n}_final.csv",
+                    f"responses{post_name}/UDHR_sara_results_{rep_n}_final.csv",
                 ),
                 "w",
             ),
