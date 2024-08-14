@@ -7,33 +7,85 @@ import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from sara import UDHR_utils_sara as u_sara
+
+# from sara import UDHR_llamacpp_utils_sara as u_sara
 from UDHR.get_UDHR_inputs import get_identities_dicts, get_rights_lists
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+path2result = "../ethical_llms_data/UDHR/"
+pre_name = "_2"
 
 
 def make_model():
+    # download model from huggingface
+    # from huggingface_hub import snapshot_download
+    # snapshot_download(
+    #         repo_id='google/gemma-2b-it',
+    #         local_dir=os.path.join('/HDD/models/', 'google/gemma-2b-it'),
+    #         token="",
+    #         force_download=True,
+    #         )
+
+    _ = torch.set_grad_enabled(False)
+
+    # *******************************************************************
+    # if GPU run
+    # bitsandbytes-foundation/bitsandbytes#40, quantization isn't really supported on cpu.
     quantization_config = BitsAndBytesConfig(
         load_in_8bit=True, bnb_4bit_compute_dtype=torch.bfloat16
     )
-
-    _ = torch.set_grad_enabled(False)
-    model_path: str = "/HDD/models/google/Gemma-2B/"
-
+    # model_path: str = "/HDD/models/google/Gemma-2B/"
+    model_path: str = "/HDD/models/google/gemma-2b-it/"
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         quantization_config=quantization_config,
         low_cpu_mem_usage=True,
+        device_map="cuda",
     )
-    # model = ORTModelForSequenceClassification.from_pretrained(model_path,
-    #                                                           export=True,
-    #                                              quantization_config=quantization_config,
-    #                                              low_cpu_mem_usage=True,
-    #                                              )
-    # enable BetterTransformer
-    # model = model.to_bettertransformer()
-
     model.tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # *******************************************************************
+    # if CPU gguf transformer lib run - for LLaMa, Mistral, Qwen2 models
+    # pip install gguf sentencepiece
+    # model_path: str = "/HDD/models/google/gemma-2b-it/"
+    # model = AutoModelForCausalLM.from_pretrained(
+    #         model_path,
+    #         gguf_file="gemma-2b-it.gguf",
+    #         low_cpu_mem_usage=True,
+    #         device_map='cpu'
+    #         )
+    # model.tokenizer = AutoTokenizer.from_pretrained(model_path, gguf_file="gemma-2b-it.gguf")
+
+    # *******************************************************************
+    # for CPU gguf llama_cpp run - for Gemma
+    # pip install llama-cpp-python
+    # model_path: str = "/HDD/models/google/gemma-2b-it/gemma-2b-it.gguf"
+    # model = Llama(
+    #         model_path=model_path,
+    #         torch_dtype=torch.bfloat16,
+    #         n_ctx=0,
+    #         n_threads=16,
+    #         use_mlock=True,
+    #         flash_attn=True,
+    #         n_batch = 50,
+    #         # logits_all=True,
+    #         # device_map="auto",
+    #         # token=HUGGINGFACE_TOKEN,
+    #         verbose=False,
+    #         )
+    # model.tokenizer = LlamaTokenizer(model)
+
+    # *******************************************************************
+    # # if CPU transformer lib run
+    # model_path: str = "/HDD/models/google/gemma-2b-it/"
+    # model = AutoModelForCausalLM.from_pretrained(
+    #         model_path,
+    #         low_cpu_mem_usage=True,
+    #         device_map='cpu'
+    #         )
+    # model.tokenizer = AutoTokenizer.from_pretrained(model_path)
+
     sampling_kwargs: Dict[str, Union[float, int]] = {
         "temperature": 0.8,
         "top_p": 0.3,
@@ -50,7 +102,7 @@ def make_prompts():
     i_current = get_identities_dicts()
 
     BTC_SIZE = 50
-    pre_prompt = "".join(open("UDHR/UDHR_Prompt_btc50.txt", "r").readlines())
+    pre_prompt = "".join(open("UDHR/UDHR_Prompt.txt", "r").readlines())
     prompts, this_btc_prompts = [], []
     for q in q_current:
         for i_k in i_current.keys():
@@ -94,8 +146,11 @@ def make_df(nom_df, mod_df, prompts, layer, i_class, i_name, r_name):
 
 def do_sara(model, sampling_kwargs):
     # Steering prompts
-    prompt_to_be_repelled = "Nobody should have rights and freedoms."
-    prompt_to_steer_to = "Everyone should have equal rights."
+    # prompt_to_be_repelled = "Nobody should have rights and freedoms."
+    # prompt_to_steer_to = "Everyone should have equal rights."
+
+    prompt_to_be_repelled = "Nobody should have rights and freedoms." * 10
+    prompt_to_steer_to = "Everyone should have equal rights." * 10
 
     prompts_btc = make_prompts()
 
@@ -112,7 +167,11 @@ def do_sara(model, sampling_kwargs):
                 "right",
             ]
         )
-        for layer in range(0, model.config.num_hidden_layers):
+        try:
+            num_hidden_layers = int(model.config.num_hidden_layers)
+        except:
+            num_hidden_layers = int(model.metadata.get("gemma.block_count"))
+        for layer in range(0, num_hidden_layers):
             print("Layer: " + str(layer) + " : rep_n: " + str(rep_n))
             A_attract = u_sara.get_vectors(
                 model, model.tokenizer, [prompt_to_steer_to], layer
@@ -121,7 +180,7 @@ def do_sara(model, sampling_kwargs):
                 model, model.tokenizer, [prompt_to_be_repelled], layer
             )[0]
             # Fetch the comparison data
-            for i, prompts in tqdm.tqdm(enumerate(prompts_btc)):
+            for i, prompts in tqdm.tqdm(enumerate(prompts_btc), total=len(prompts_btc)):
                 i_classes, i_names, r_names, prompts = zip(*prompts)
                 comparison_df = u_sara.get_n_comparisons(
                     model=model,
@@ -151,12 +210,25 @@ def do_sara(model, sampling_kwargs):
             )
             df.to_csv(
                 open(
-                    f"UDHR/responses/UDHR_sara_results_l_{layer}_rep_{rep_n}.csv", "w"
+                    os.path.join(
+                        path2result,
+                        f"responses{pre_name}/UDHR_sara_results_l_{layer}_rep_{rep_n}.csv",
+                    ),
+                    "w",
                 ),
                 sep="\t",
             )
         print("Rep_n " + str(rep_n) + " is done.")
-        df.to_csv(open(f"UDHR/responses/UDHR_sara_results_{rep_n}.csv", "w"), sep="\t")
+        df.to_csv(
+            open(
+                os.path.join(
+                    path2result,
+                    f"responses{pre_name}/UDHR_sara_results_{rep_n}_final.csv",
+                ),
+                "w",
+            ),
+            sep="\t",
+        )
 
 
 if __name__ == "__main__":

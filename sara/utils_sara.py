@@ -74,7 +74,6 @@ def soft_align_and_repel(
     )
 
     # Compute scaling factors as the difference between the attract and repel similarities
-    # TODO :
     scaling_factors = sim_to_A_attract - sim_to_A_repel
     scaling_factors = scaling_factors.unsqueeze(
         -1

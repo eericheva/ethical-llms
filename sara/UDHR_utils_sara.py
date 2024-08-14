@@ -67,6 +67,7 @@ def soft_align_and_repel(
     # Align dimensions of A_attract, A_repel, and A_original using SVD
     A_attract_aligned = apply_svd_and_align_dimensions(A_attract, min_seq_length)
     A_repel_aligned = apply_svd_and_align_dimensions(A_repel, min_seq_length)
+    # BATCHING: allow parallel compute for batch in A_original, also pay attn to changes in dim arg
     apply_svd_and_align_dimensions_v_map = torch.vmap(
         lambda x: apply_svd_and_align_dimensions(x, min_seq_length),
         in_dims=-1,
@@ -75,12 +76,14 @@ def soft_align_and_repel(
     A_original_aligned = apply_svd_and_align_dimensions_v_map(A_original)
 
     # Compute cosine similarity between A_original and A_attract, and A_original and A_repel
+    # BATCHING: allow parallel compute for batch in A_original, also pay attn to changes in dim arg
     cosine_similarity_v_map = torch.vmap(
         lambda x: torch.nn.functional.cosine_similarity(x, A_attract_aligned, dim=1),
         in_dims=-1,
         out_dims=-1,
     )
     sim_to_A_attract = cosine_similarity_v_map(A_original_aligned)
+    # BATCHING: allow parallel compute for batch in A_original, also pay attn to changes in dim arg
     cosine_similarity_v_map = torch.vmap(
         lambda x: torch.nn.functional.cosine_similarity(x, A_repel_aligned, dim=1),
         in_dims=-1,
@@ -89,7 +92,6 @@ def soft_align_and_repel(
     sim_to_A_repel = cosine_similarity_v_map(A_original_aligned)
 
     # Compute scaling factors as the difference between the attract and repel similarities
-    # TODO :
     scaling_factors = sim_to_A_attract - sim_to_A_repel
     scaling_factors = scaling_factors.unsqueeze(
         1
@@ -113,6 +115,7 @@ def get_soft_align_and_repel_hook_fn(
         (resid_pre,) = inputs
 
         # Transform dimensions for compatibility with soft_align_and_repel
+        # BATCHING: also pay attn to changes in dim arg
         aligned_repelled = soft_align_and_repel(
             resid_pre.transpose(0, -1),  # .squeeze(0)
             A_attract.transpose(0, -1),
@@ -121,6 +124,7 @@ def get_soft_align_and_repel_hook_fn(
         )
 
         # Return the modified tensor to replace the input in the forward pass
+        # BATCHING: also pay attn to changes in dim arg
         return aligned_repelled.transpose(0, -1)  # .t().unsqueeze(0)
 
     return hook
@@ -136,6 +140,7 @@ def get_n_comparisons(
     coeff: float,
     **sampling_kwargs
 ) -> pd.DataFrame:
+    # MINOR OPTS: now A_attract and A_repel are computed once outside and are input args
     inputs = tokenizer(prompts, return_tensors="pt", padding=True)
     device = next(model.parameters()).device
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -158,30 +163,28 @@ def get_n_comparisons(
 def format_comparison_results(nom_tokens, mod_tokens, tokenizer, prompts, layer):
     nom_df = _to_df(nom_tokens, False, tokenizer, prompts, layer)
     mod_df = _to_df(mod_tokens, True, tokenizer, prompts, layer)
-    # return pd.concat([nom_df, mod_df], ignore_index=True)
+    # MINOR OPTS: since A_attract and A_repel are computed once outside and are input args to get_n_comparisons()
+    # func, here we make some changes in constructing output DF
     return nom_df, mod_df
 
 
 def _to_df(tokens: torch.Tensor, modified: bool, tokenizer, prompts, layer):
     completions = [
-        tokenizer.decode(torch.tolist(), skip_special_tokens=True) for t in tokens
+        tokenizer.decode(t.tolist(), skip_special_tokens=True) for t in tokens
     ]
     trimmed = [c[len(p) :] for p, c in zip(prompts, completions)]
     trimmed = _get_number_from_trimmed(trimmed)
-    # return pd.DataFrame({
-    #         'prompts':     prompts,
-    #         'completions': trimmed,
-    #         'is_modified': modified,
-    #         'layer':       layer
-    #         })
+    # MINOR OPTS: since A_attract and A_repel are computed once outside and are input args to get_n_comparisons()
+    # func, here we make some changes in constructing output DF
     return trimmed
 
 
 def _get_number_from_trimmed(trimmed):
+    # MINOR OPTS: some additional check and getting final model decision
     trn = []
     for t in trimmed:
         try:
             trn.append(re.findall(r"\d+", t)[0])
         except:
-            trn.append(None)
+            trn.append("None")
     return trn
